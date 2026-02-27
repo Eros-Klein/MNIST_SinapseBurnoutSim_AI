@@ -1,1 +1,1 @@
-# Hallo
+# Witness a Synapse Burnout yourself by trying to read our application code!

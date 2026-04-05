@@ -9,13 +9,11 @@ from fastapi.responses import FileResponse
 
 from app.models import ImageEntry, ImageListResponse
 from app.services.evaluator import evaluate_volume
-from app.services.preview import build_preview_png
 from app.services.storage import (
     DATA_DIR,
     list_entries,
-    preview_path_for_id,
+    npy_path_for_id,
     store_image_result,
-    store_preview,
 )
 
 @asynccontextmanager
@@ -64,8 +62,6 @@ async def upload_image(image: UploadFile = File(..., description="Single 28x28x2
 
     evaluation = await evaluate_volume(volume)
     entry = await store_image_result(volume=volume, evaluation=evaluation)
-    preview_png = await build_preview_png(volume)
-    await store_preview(image_id=entry.id, preview_png=preview_png)
 
     return entry
 
@@ -79,10 +75,10 @@ async def get_images(
     return ImageListResponse(offset=offset, limit=limit, count=len(items), items=items)
 
 
-@app.get("/images/{image_id}/preview")
-async def get_image_preview(image_id: str) -> FileResponse:
-    preview_path = await preview_path_for_id(image_id)
-    if preview_path is None:
-        raise HTTPException(status_code=404, detail="Image preview not found.")
+@app.get("/images/{image_id}/npy")
+async def get_image_npy(image_id: str) -> FileResponse:
+    npy_path = await npy_path_for_id(image_id)
+    if npy_path is None:
+        raise HTTPException(status_code=404, detail="Image data not found.")
 
-    return FileResponse(path=preview_path, media_type="image/png")
+    return FileResponse(path=npy_path, media_type="application/octet-stream")

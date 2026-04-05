@@ -15,7 +15,7 @@ class ImageEntry(BaseModel):
     created_at: datetime
     shape: tuple[int, int, int]
     evaluation: EvaluationResult
-    preview_url: str
+    npy_url: str
 
 
 class ImageListResponse(BaseModel):

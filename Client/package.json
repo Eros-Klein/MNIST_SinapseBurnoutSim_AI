@@ -9,6 +9,11 @@
     "astro": "astro"
   },
   "dependencies": {
-    "astro": "^5.17.1"
+    "astro": "^5.17.1",
+    "three": "^0.183.2"
+  },
+  "devDependencies": {
+    "@astrojs/ts-plugin": "^1.10.7",
+    "typescript": "^5.9.3"
   }
 }

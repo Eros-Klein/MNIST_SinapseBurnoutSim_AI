@@ -1,0 +1,597 @@
+---
+import background from "../assets/background.svg";
+import Layout from "../layouts/Layout.astro";
+---
+
+<Layout>
+  <div id="container">
+    <img id="background" src={background.src} alt="" fetchpriority="high" />
+    <main>
+      <section id="hero">
+        <a href="/" id="logo">
+          <svg width="64" height="64" viewBox="0 0 500 200" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="textGradientR" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#00f5ff" />
+                <stop offset="50%" stop-color="#7a5cff" />
+                <stop offset="100%" stop-color="#ff4d9d" />
+              </linearGradient>
+              <filter id="neonGlowR" x="-50%" y="-50%" width="200%" height="200%">
+                <feGaussianBlur stdDeviation="6" result="blur1" />
+                <feGaussianBlur in="SourceGraphic" stdDeviation="2" result="blur2" />
+                <feMerge>
+                  <feMergeNode in="blur1" />
+                  <feMergeNode in="blur2" />
+                  <feMergeNode in="SourceGraphic" />
+                </feMerge>
+              </filter>
+            </defs>
+            <text
+              x="50%"
+              y="60%"
+              text-anchor="middle"
+              dominant-baseline="middle"
+              font-family="Brush Script MT, Pacifico, cursive"
+              font-size="220"
+              font-weight="600"
+              fill="url(#textGradientR)"
+              filter="url(#neonGlowR)">SB</text>
+          </svg>
+          SynapseBurner
+        </a>
+
+        <div id="headline">
+          <h1>Past scans</h1>
+          <p class="subtitle">Results from your SynapseBurner uploads (newest first).</p>
+          <div id="toolbar">
+            <button type="button" id="refresh-btn" class="btn btn-primary">Refresh</button>
+            <a class="btn btn-ghost" href="/synapse">New scan</a>
+            <a class="btn btn-ghost" href="/">Home</a>
+          </div>
+        </div>
+
+        <p id="status" class="status" hidden></p>
+        <div id="grid" class="grid"></div>
+      </section>
+    </main>
+
+    <div id="viewer-modal" class="viewer-modal" hidden>
+      <div id="viewer-modal-backdrop" class="viewer-modal-backdrop"></div>
+      <div class="viewer-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="viewer-modal-title">
+        <div class="viewer-modal-header">
+          <h2 id="viewer-modal-title" class="viewer-modal-title">3D volume</h2>
+          <button type="button" id="viewer-modal-close" class="viewer-modal-close">Close</button>
+        </div>
+        <p id="viewer-modal-status" class="viewer-modal-status"></p>
+        <div class="viewer-modal-body">
+          <div id="modal-webgl-host" class="volume-webgl-host"></div>
+          <div class="volume-slices">
+            <div class="slice-block">
+              <label class="slice-label">XY (Z) <span id="modal-slice-z-val" class="slice-val"></span><input type="range" id="modal-slice-z" min="0" max="27" value="14" /></label>
+              <canvas id="modal-slice-xy" class="slice-canvas"></canvas>
+            </div>
+            <div class="slice-block">
+              <label class="slice-label">XZ (Y) <span id="modal-slice-y-val" class="slice-val"></span><input type="range" id="modal-slice-y" min="0" max="27" value="14" /></label>
+              <canvas id="modal-slice-xz" class="slice-canvas"></canvas>
+            </div>
+            <div class="slice-block">
+              <label class="slice-label">YZ (X) <span id="modal-slice-x-val" class="slice-val"></span><input type="range" id="modal-slice-x" min="0" max="27" value="14" /></label>
+              <canvas id="modal-slice-yz" class="slice-canvas"></canvas>
+            </div>
+          </div>
+        </div>
+        <label class="thresh-label">Intensity cutoff <input type="range" id="modal-threshold" min="0" max="100" value="10" /><span id="modal-threshold-val" class="slice-val"></span></label>
+      </div>
+    </div>
+  </div>
+
+<script>
+  import { fetchImageList, fetchVolumeNpy, previewAbsoluteUrl, type ImageEntry } from "../lib/api";
+  import { parseNpyBuffer } from "../lib/npyParse";
+  import { createVolumeView, type VolumeViewHandle } from "../lib/volumeViewer";
+
+  const grid = document.getElementById("grid") as HTMLDivElement;
+  const status = document.getElementById("status") as HTMLParagraphElement;
+  const refreshBtn = document.getElementById("refresh-btn") as HTMLButtonElement;
+  const viewerModal = document.getElementById("viewer-modal") as HTMLDivElement;
+  const viewerBackdrop = document.getElementById("viewer-modal-backdrop") as HTMLDivElement;
+  const viewerClose = document.getElementById("viewer-modal-close") as HTMLButtonElement;
+  const modalWebglHost = document.getElementById("modal-webgl-host") as HTMLElement;
+  const modalStatus = document.getElementById("viewer-modal-status") as HTMLParagraphElement;
+  const modalSliceZ = document.getElementById("modal-slice-z") as HTMLInputElement;
+  const modalSliceY = document.getElementById("modal-slice-y") as HTMLInputElement;
+  const modalSliceX = document.getElementById("modal-slice-x") as HTMLInputElement;
+  const modalSliceZVal = document.getElementById("modal-slice-z-val") as HTMLSpanElement;
+  const modalSliceYVal = document.getElementById("modal-slice-y-val") as HTMLSpanElement;
+  const modalSliceXVal = document.getElementById("modal-slice-x-val") as HTMLSpanElement;
+  const modalCanvasXy = document.getElementById("modal-slice-xy") as HTMLCanvasElement;
+  const modalCanvasXz = document.getElementById("modal-slice-xz") as HTMLCanvasElement;
+  const modalCanvasYz = document.getElementById("modal-slice-yz") as HTMLCanvasElement;
+  const modalThreshold = document.getElementById("modal-threshold") as HTMLInputElement;
+  const modalThresholdVal = document.getElementById("modal-threshold-val") as HTMLSpanElement;
+
+  let modalVolumeView: VolumeViewHandle | null = null;
+
+  function showStatus(message: string, isError: boolean) {
+    status.hidden = false;
+    status.textContent = message;
+    status.classList.toggle("status-error", isError);
+  }
+
+  function clearStatus() {
+    status.hidden = true;
+    status.textContent = "";
+    status.classList.remove("status-error");
+  }
+
+  function cardHtml(entry: ImageEntry): string {
+    const when = new Date(entry.created_at).toLocaleString();
+    const scorePct = `${Math.round(entry.evaluation.score * 1000) / 10}%`;
+    const src = previewAbsoluteUrl(entry.preview_url);
+    const shape = `${entry.shape[0]}×${entry.shape[1]}×${entry.shape[2]}`;
+    return `
+      <article class="card">
+        <img class="card-preview" src="${src}" alt="" loading="lazy" width="200" height="200" />
+        <div class="card-body">
+          <p class="card-label">${escapeHtml(entry.evaluation.label)}</p>
+          <p class="card-meta">Confidence: <strong>${scorePct}</strong></p>
+          <p class="card-meta">${escapeHtml(shape)} · ${escapeHtml(when)}</p>
+          <p class="card-actions">
+            <button type="button" class="btn btn-3d view-3d-btn" data-id="${escapeHtml(entry.id)}">View 3D</button>
+          </p>
+        </div>
+      </article>
+    `;
+  }
+
+  function escapeHtml(s: string): string {
+    return s
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  async function load() {
+    clearStatus();
+    refreshBtn.disabled = true;
+    grid.innerHTML = "";
+    try {
+      const data = await fetchImageList(0, 50);
+      if (data.items.length === 0) {
+        showStatus("No scans yet. Upload a volume on the scan page.", false);
+        return;
+      }
+      grid.innerHTML = data.items.map(cardHtml).join("");
+    } catch (e) {
+      showStatus(e instanceof Error ? e.message : "Could not load results.", true);
+    } finally {
+      refreshBtn.disabled = false;
+    }
+  }
+
+  function updateModalThresholdLabel() {
+    modalThresholdVal.textContent = `${modalThreshold.value}%`;
+  }
+
+  function closeViewerModal() {
+    modalVolumeView?.dispose();
+    modalVolumeView = null;
+    modalWebglHost.innerHTML = "";
+    viewerModal.hidden = true;
+    modalStatus.textContent = "";
+  }
+
+  /** Past-results modal: WebGL/slices init before layout is final if the dialog stays inside #container. */
+  function mountModalOnBody() {
+    if (viewerModal.parentElement !== document.body) {
+      document.body.appendChild(viewerModal);
+    }
+  }
+
+  function scheduleModalViewerRelayout(handle: VolumeViewHandle) {
+    const kick = () => handle.relayout();
+    kick();
+    requestAnimationFrame(() => {
+      kick();
+      requestAnimationFrame(() => kick());
+    });
+  }
+
+  async function openViewerModal(imageId: string) {
+    modalVolumeView?.dispose();
+    modalVolumeView = null;
+    modalWebglHost.innerHTML = "";
+    mountModalOnBody();
+    viewerModal.hidden = false;
+    modalStatus.textContent = "Loading volume…";
+    modalStatus.classList.remove("viewer-modal-status-error");
+
+    try {
+      const buf = await fetchVolumeNpy(imageId);
+      const parsed = parseNpyBuffer(buf);
+      modalStatus.textContent = "";
+      modalVolumeView = createVolumeView(modalWebglHost, parsed, {
+        xy: modalCanvasXy,
+        xz: modalCanvasXz,
+        yz: modalCanvasYz,
+        rangeZ: modalSliceZ,
+        rangeY: modalSliceY,
+        rangeX: modalSliceX,
+        valZ: modalSliceZVal,
+        valY: modalSliceYVal,
+        valX: modalSliceXVal,
+      });
+      updateModalThresholdLabel();
+      modalVolumeView.setThreshold(Number(modalThreshold.value) / 100);
+      scheduleModalViewerRelayout(modalVolumeView);
+    } catch (e) {
+      modalStatus.textContent = e instanceof Error ? e.message : "Could not load volume.";
+      modalStatus.classList.add("viewer-modal-status-error");
+    }
+  }
+
+  modalThreshold.addEventListener("input", () => {
+    updateModalThresholdLabel();
+    modalVolumeView?.setThreshold(Number(modalThreshold.value) / 100);
+  });
+
+  viewerClose.addEventListener("click", closeViewerModal);
+  viewerBackdrop.addEventListener("click", closeViewerModal);
+
+  grid.addEventListener("click", (e) => {
+    const t = e.target as HTMLElement;
+    const btn = t.closest(".view-3d-btn");
+    if (!btn) return;
+    const id = btn.getAttribute("data-id");
+    if (id) void openViewerModal(id);
+  });
+
+  refreshBtn.addEventListener("click", () => void load());
+  void load();
+</script>
+</Layout>
+
+<style>
+  #background {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    z-index: -1;
+    filter: blur(80px);
+    opacity: 0.85;
+  }
+
+  #container {
+    font-family: Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
+    min-height: 100%;
+    color: #111827;
+  }
+
+  main {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 0 24px 64px;
+  }
+
+  #logo {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 40px;
+    font-size: 22px;
+    font-style: italic;
+    font-weight: 800;
+    color: #7a5cff;
+    text-decoration: none;
+    letter-spacing: -0.3px;
+  }
+
+  #hero {
+    display: flex;
+    flex-direction: column;
+    padding-top: 16px;
+  }
+
+  #headline {
+    margin-top: 40px;
+  }
+
+  #headline h1 {
+    font-size: clamp(2rem, 5vw, 2.75rem);
+    font-weight: 800;
+    line-height: 1.15;
+    letter-spacing: -0.03em;
+    margin: 0 0 12px;
+    color: #0f172a;
+  }
+
+  .subtitle {
+    font-size: 17px;
+    line-height: 1.65;
+    color: #374151;
+    max-width: 620px;
+    margin: 0 0 24px;
+  }
+
+  #toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 28px;
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 20px;
+    border-radius: 12px;
+    font-family: inherit;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    border: none;
+    text-decoration: none;
+    transition: transform 0.15s, box-shadow 0.15s, opacity 0.15s;
+  }
+
+  .btn:hover {
+    transform: translateY(-2px);
+  }
+
+  .btn-primary {
+    color: #fff;
+    background: linear-gradient(83deg, #3245ff 0%, #bc52ee 100%);
+    box-shadow:
+      0 4px 20px rgba(114, 78, 255, 0.4),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.15);
+  }
+
+  .btn-primary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+  }
+
+  .btn-ghost {
+    color: #374151;
+    background: rgba(255, 255, 255, 0.6);
+    box-shadow:
+      0 2px 8px rgba(0, 0, 0, 0.08),
+      inset 0 0 0 1px rgba(0, 0, 0, 0.08);
+    backdrop-filter: blur(8px);
+  }
+
+  .status {
+    font-size: 15px;
+    color: #374151;
+    margin: 0 0 20px;
+  }
+
+  .status-error {
+    color: #b91c1c;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 20px;
+  }
+
+  .card {
+    background: rgba(255, 255, 255, 0.6);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.8);
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+  }
+
+  .card-preview {
+    width: 100%;
+    aspect-ratio: 1;
+    object-fit: contain;
+    background: #f8fafc;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  }
+
+  .card-body {
+    padding: 14px 16px 16px;
+  }
+
+  .card-label {
+    font-size: 17px;
+    font-weight: 700;
+    color: #0f172a;
+    margin: 0 0 8px;
+  }
+
+  .card-meta {
+    font-size: 13px;
+    color: #4b5563;
+    margin: 0 0 4px;
+    line-height: 1.5;
+  }
+
+  .card-meta:last-child {
+    margin-bottom: 0;
+  }
+
+  .card-actions {
+    margin: 12px 0 0;
+  }
+
+  .btn-3d {
+    display: inline-flex;
+    align-items: center;
+    padding: 8px 14px;
+    border-radius: 10px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    border: none;
+    color: #fff;
+    background: linear-gradient(83deg, #3245ff 0%, #bc52ee 100%);
+    box-shadow: 0 2px 12px rgba(114, 78, 255, 0.35);
+    transition: transform 0.15s, box-shadow 0.15s;
+  }
+
+  .btn-3d:hover {
+    transform: translateY(-1px);
+  }
+
+  .viewer-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+
+  .viewer-modal-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.45);
+    backdrop-filter: blur(4px);
+  }
+
+  .viewer-modal-dialog {
+    position: relative;
+    z-index: 1;
+    width: min(920px, 100%);
+    max-height: min(92vh, 900px);
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 20px 22px 22px;
+    border-radius: 18px;
+    background: rgba(255, 255, 255, 0.94);
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.9);
+  }
+
+  .viewer-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 8px;
+  }
+
+  .viewer-modal-title {
+    margin: 0;
+    font-size: 1.2rem;
+    font-weight: 800;
+    color: #0f172a;
+  }
+
+  .viewer-modal-close {
+    padding: 8px 14px;
+    border-radius: 10px;
+    border: 1px solid rgba(0, 0, 0, 0.12);
+    background: rgba(255, 255, 255, 0.9);
+    font-weight: 600;
+    cursor: pointer;
+    font-family: inherit;
+  }
+
+  .viewer-modal-status {
+    min-height: 1.25em;
+    font-size: 14px;
+    color: #4b5563;
+    margin: 0 0 12px;
+  }
+
+  .viewer-modal-status-error {
+    color: #b91c1c;
+  }
+
+  .viewer-modal-body {
+    display: grid;
+    grid-template-columns: minmax(240px, 1.1fr) minmax(200px, 0.9fr);
+    gap: 16px;
+    align-items: start;
+    min-width: 0;
+  }
+
+  @media screen and (max-width: 720px) {
+    .viewer-modal-body {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .volume-webgl-host {
+    width: 100%;
+    min-width: 0;
+    min-height: 260px;
+    height: min(38vh, 340px);
+    border-radius: 14px;
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: #0c0c10;
+    transform: translateZ(0);
+  }
+
+  .volume-slices {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .slice-block {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .slice-label {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #374151;
+  }
+
+  .slice-label input[type="range"] {
+    flex: 1;
+    min-width: 100px;
+    accent-color: #7a5cff;
+  }
+
+  .slice-val {
+    font-variant-numeric: tabular-nums;
+    color: #7a5cff;
+    min-width: 1.5rem;
+  }
+
+  .slice-canvas {
+    display: block;
+    border-radius: 10px;
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    background: #0f172a;
+    image-rendering: pixelated;
+  }
+
+  .thresh-label {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    margin-top: 14px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #374151;
+  }
+
+  .thresh-label input[type="range"] {
+    flex: 1;
+    max-width: 280px;
+    accent-color: #7a5cff;
+  }
+</style>

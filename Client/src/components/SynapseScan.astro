@@ -42,7 +42,7 @@ import background from "../assets/background.svg";
       <div id="headline">
         <h1>Upload Here!</h1>
         <p class="subtitle">
-          Upload an image of your synapse and you will gain real-time results on the health of your synapse!
+          Upload a 28×28×28 NumPy volume (<code>.npy</code>) for inference. The API evaluates it and returns a label, confidence, and a preview slice.
         </p>
 
         <div id="upload-area">
@@ -53,23 +53,63 @@ import background from "../assets/background.svg";
               <line x1="12" y1="3" x2="12" y2="15"/>
             </svg>
             <span id="drop-label">Drag & drop or <strong>browse</strong></span>
-            <span id="drop-hint">PNG, JPG, WEBP — max 10 MB</span>
-            <input id="file-input" type="file" accept="image/png,image/jpeg,image/webp" />
+            <span id="drop-hint">Single <code>.npy</code> file — shape must be 28×28×28</span>
+            <input id="file-input" type="file" accept=".npy,application/octet-stream" />
           </label>
-          <div hidden="true" id="preview-wrap">
-            <img id="preview-img" src="" alt="Preview" />
+          <div hidden id="preview-wrap">
+            <div id="preview-thumb" aria-hidden="true">NPY</div>
             <span id="preview-name"></span>
           </div>
         </div>
 
+        <section id="volume-panel" class="volume-panel" hidden>
+          <h2 class="volume-heading">3D volume</h2>
+          <p class="volume-hint">
+            Drag to rotate, scroll to zoom. Use the sliders for orthogonal slices. Lower the threshold to show more low-intensity voxels.
+          </p>
+          <div class="volume-layout">
+            <div id="volume-webgl-host" class="volume-webgl-host"></div>
+            <div class="volume-slices">
+              <div class="slice-block">
+                <label class="slice-label">XY slice (Z) <span id="slice-z-val" class="slice-val"></span><input type="range" id="slice-z" min="0" max="27" value="14" /></label>
+                <canvas id="slice-canvas-xy" class="slice-canvas"></canvas>
+              </div>
+              <div class="slice-block">
+                <label class="slice-label">XZ slice (Y) <span id="slice-y-val" class="slice-val"></span><input type="range" id="slice-y" min="0" max="27" value="14" /></label>
+                <canvas id="slice-canvas-xz" class="slice-canvas"></canvas>
+              </div>
+              <div class="slice-block">
+                <label class="slice-label">YZ slice (X) <span id="slice-x-val" class="slice-val"></span><input type="range" id="slice-x" min="0" max="27" value="14" /></label>
+                <canvas id="slice-canvas-yz" class="slice-canvas"></canvas>
+              </div>
+            </div>
+          </div>
+          <label class="thresh-label">Intensity cutoff <input type="range" id="volume-threshold" min="0" max="100" value="10" /><span id="threshold-val" class="slice-val"></span></label>
+        </section>
+
         <div id="cta">
-          <button id="scan-btn" class="btn btn-primary" disabled>
-            Scan Synapse
-            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <button type="button" id="scan-btn" class="btn btn-primary" disabled>
+            <span id="scan-btn-label">Scan Synapse</span>
+            <svg id="scan-btn-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>
             </svg>
           </button>
+          <a class="btn btn-ghost" href="/results">Past results</a>
           <a class="btn btn-ghost" href="/">Back Home</a>
+        </div>
+
+        <div id="error-panel" role="alert" hidden></div>
+
+        <div id="result-panel" hidden>
+          <h2 class="result-heading">Result</h2>
+          <div class="result-card">
+            <img id="result-preview" src="" alt="Model preview" width="200" height="200" />
+            <div class="result-body">
+              <p class="result-label" id="result-label"></p>
+              <p class="result-score">Confidence: <strong id="result-score"></strong></p>
+              <p class="result-meta" id="result-meta"></p>
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -77,28 +117,142 @@ import background from "../assets/background.svg";
 </div>
 
 <script>
-  async function scanSynapse(file: File): Promise<void> {
-    // TODO: send `file` to the backend API and display results
-  }
+  import { previewAbsoluteUrl, uploadVolume, type ImageEntry } from "../lib/api";
+  import { parseNpyBuffer } from "../lib/npyParse";
+  import { createVolumeView, type VolumeViewHandle } from "../lib/volumeViewer";
 
   const fileInput = document.getElementById("file-input") as HTMLInputElement;
   const scanBtn = document.getElementById("scan-btn") as HTMLButtonElement;
+  const scanBtnLabel = document.getElementById("scan-btn-label") as HTMLSpanElement;
+  const scanBtnIcon = document.getElementById("scan-btn-icon") as SVGElement;
   const dropZone = document.getElementById("drop-zone") as HTMLLabelElement;
   const previewWrap = document.getElementById("preview-wrap") as HTMLDivElement;
-  const previewImg = document.getElementById("preview-img") as HTMLImageElement;
   const previewName = document.getElementById("preview-name") as HTMLSpanElement;
+  const volumePanel = document.getElementById("volume-panel") as HTMLElement;
+  const volumeWebglHost = document.getElementById("volume-webgl-host") as HTMLElement;
+  const sliceZ = document.getElementById("slice-z") as HTMLInputElement;
+  const sliceY = document.getElementById("slice-y") as HTMLInputElement;
+  const sliceX = document.getElementById("slice-x") as HTMLInputElement;
+  const sliceZVal = document.getElementById("slice-z-val") as HTMLSpanElement;
+  const sliceYVal = document.getElementById("slice-y-val") as HTMLSpanElement;
+  const sliceXVal = document.getElementById("slice-x-val") as HTMLSpanElement;
+  const canvasXy = document.getElementById("slice-canvas-xy") as HTMLCanvasElement;
+  const canvasXz = document.getElementById("slice-canvas-xz") as HTMLCanvasElement;
+  const canvasYz = document.getElementById("slice-canvas-yz") as HTMLCanvasElement;
+  const thresholdInput = document.getElementById("volume-threshold") as HTMLInputElement;
+  const thresholdVal = document.getElementById("threshold-val") as HTMLSpanElement;
+  const errorPanel = document.getElementById("error-panel") as HTMLDivElement;
+  const resultPanel = document.getElementById("result-panel") as HTMLDivElement;
+  const resultPreview = document.getElementById("result-preview") as HTMLImageElement;
+  const resultLabel = document.getElementById("result-label") as HTMLParagraphElement;
+  const resultScore = document.getElementById("result-score") as HTMLStrongElement;
+  const resultMeta = document.getElementById("result-meta") as HTMLParagraphElement;
 
-  function loadFile(file: File) {
-    previewImg.src = URL.createObjectURL(file);
+  let volumeView: VolumeViewHandle | null = null;
+
+  function disposeVolumeView() {
+    volumeView?.dispose();
+    volumeView = null;
+  }
+
+  function updateThresholdLabel() {
+    thresholdVal.textContent = `${thresholdInput.value}%`;
+  }
+
+  function isNpyFile(file: File): boolean {
+    const name = file.name.toLowerCase();
+    return name.endsWith(".npy");
+  }
+
+  function showError(message: string) {
+    errorPanel.hidden = false;
+    errorPanel.textContent = message;
+    resultPanel.hidden = true;
+  }
+
+  function clearError() {
+    errorPanel.hidden = true;
+    errorPanel.textContent = "";
+  }
+
+  function renderResult(entry: ImageEntry) {
+    resultPreview.src = previewAbsoluteUrl(entry.preview_url);
+    resultLabel.textContent = entry.evaluation.label;
+    const pct = Math.round(entry.evaluation.score * 1000) / 10;
+    resultScore.textContent = `${pct}%`;
+    const when = new Date(entry.created_at).toLocaleString();
+    const shape = `${entry.shape[0]}×${entry.shape[1]}×${entry.shape[2]}`;
+    resultMeta.textContent = `${shape} · ${when}`;
+    resultPanel.hidden = false;
+  }
+
+  async function scanSynapse(file: File): Promise<void> {
+    clearError();
+    scanBtn.disabled = true;
+    scanBtnLabel.textContent = "Scanning…";
+    scanBtnIcon.style.display = "none";
+
+    try {
+      const entry = await uploadVolume(file);
+      renderResult(entry);
+    } catch (e) {
+      showError(e instanceof Error ? e.message : "Something went wrong.");
+    } finally {
+      scanBtn.disabled = false;
+      scanBtnLabel.textContent = "Scan Synapse";
+      scanBtnIcon.style.display = "";
+    }
+  }
+
+  async function loadFile(file: File) {
+    if (!isNpyFile(file)) {
+      showError("Please choose a .npy file (28×28×28 volume).");
+      fileInput.value = "";
+      scanBtn.disabled = true;
+      previewWrap.hidden = true;
+      volumePanel.hidden = true;
+      disposeVolumeView();
+      return;
+    }
+    clearError();
     previewName.textContent = file.name;
     previewWrap.hidden = false;
     previewWrap.style.display = "flex";
     scanBtn.disabled = false;
+
+    disposeVolumeView();
+    try {
+      const buf = await file.arrayBuffer();
+      const parsed = parseNpyBuffer(buf);
+      volumeWebglHost.innerHTML = "";
+      volumeView = createVolumeView(volumeWebglHost, parsed, {
+        xy: canvasXy,
+        xz: canvasXz,
+        yz: canvasYz,
+        rangeZ: sliceZ,
+        rangeY: sliceY,
+        rangeX: sliceX,
+        valZ: sliceZVal,
+        valY: sliceYVal,
+        valX: sliceXVal,
+      });
+      updateThresholdLabel();
+      volumeView.setThreshold(Number(thresholdInput.value) / 100);
+      volumePanel.hidden = false;
+    } catch (e) {
+      volumePanel.hidden = true;
+      showError(e instanceof Error ? e.message : "Could not read this .npy file.");
+    }
   }
+
+  thresholdInput.addEventListener("input", () => {
+    updateThresholdLabel();
+    volumeView?.setThreshold(Number(thresholdInput.value) / 100);
+  });
 
   fileInput.addEventListener("change", () => {
     const file = fileInput.files?.[0];
-    if (file) loadFile(file);
+    if (file) void loadFile(file);
   });
 
   dropZone.addEventListener("dragover", (e) => {
@@ -114,12 +268,21 @@ import background from "../assets/background.svg";
     e.preventDefault();
     dropZone.classList.remove("drag-over");
     const file = e.dataTransfer?.files[0];
-    if (file) loadFile(file);
+    if (file) {
+      void loadFile(file);
+      try {
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        fileInput.files = dt.files;
+      } catch {
+        /* sync not supported — user can still click Scan if they re-pick */
+      }
+    }
   });
 
   scanBtn.addEventListener("click", () => {
     const file = fileInput.files?.[0];
-    if (file) scanSynapse(file);
+    if (file) void scanSynapse(file);
   });
 </script>
 
@@ -196,6 +359,14 @@ import background from "../assets/background.svg";
     margin: 0 0 36px;
   }
 
+  .subtitle code {
+    font-size: 0.9em;
+    padding: 0.1em 0.35em;
+    border-radius: 6px;
+    background: rgba(122, 92, 255, 0.12);
+    color: #5b21b6;
+  }
+
   /* ── Upload area ──────────────────────────────── */
   #upload-area {
     margin-bottom: 28px;
@@ -233,6 +404,13 @@ import background from "../assets/background.svg";
     color: #9ca3af;
   }
 
+  #drop-hint code {
+    font-size: 1em;
+    padding: 0.05em 0.3em;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.06);
+  }
+
   #file-input {
     display: none;
   }
@@ -249,12 +427,20 @@ import background from "../assets/background.svg";
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
   }
 
-  #preview-img {
+  #preview-thumb {
+    flex-shrink: 0;
     width: 56px;
     height: 56px;
-    object-fit: cover;
     border-radius: 8px;
-    border: 1px solid rgba(0, 0, 0, 0.08);
+    border: 1px solid rgba(122, 92, 255, 0.35);
+    background: linear-gradient(135deg, rgba(0, 245, 255, 0.15), rgba(122, 92, 255, 0.2));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    color: #5b21b6;
   }
 
   #preview-name {
@@ -264,12 +450,122 @@ import background from "../assets/background.svg";
     word-break: break-all;
   }
 
+  /* ── 3D volume viewer ──────────────────────────── */
+  .volume-panel {
+    margin-bottom: 28px;
+    padding: 22px 22px 24px;
+    border-radius: 18px;
+    background: rgba(255, 255, 255, 0.62);
+    backdrop-filter: blur(14px);
+    border: 1px solid rgba(255, 255, 255, 0.85);
+    box-shadow: 0 4px 28px rgba(0, 0, 0, 0.06);
+  }
+
+  .volume-heading {
+    font-size: 1.15rem;
+    font-weight: 800;
+    color: #0f172a;
+    margin: 0 0 8px;
+    letter-spacing: -0.02em;
+  }
+
+  .volume-hint {
+    font-size: 14px;
+    line-height: 1.6;
+    color: #4b5563;
+    margin: 0 0 18px;
+    max-width: 720px;
+  }
+
+  .volume-layout {
+    display: grid;
+    grid-template-columns: minmax(260px, 1fr) minmax(200px, 1fr);
+    gap: 20px;
+    align-items: start;
+  }
+
+  @media screen and (max-width: 820px) {
+    .volume-layout {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .volume-webgl-host {
+    width: 100%;
+    min-height: 300px;
+    height: min(42vw, 380px);
+    border-radius: 14px;
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: #0c0c10;
+  }
+
+  .volume-slices {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .slice-block {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .slice-label {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #374151;
+  }
+
+  .slice-label input[type="range"] {
+    flex: 1;
+    min-width: 120px;
+    accent-color: #7a5cff;
+  }
+
+  .slice-val {
+    font-variant-numeric: tabular-nums;
+    color: #7a5cff;
+    min-width: 1.5rem;
+  }
+
+  .slice-canvas {
+    display: block;
+    border-radius: 10px;
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    background: #0f172a;
+    image-rendering: pixelated;
+  }
+
+  .thresh-label {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    margin-top: 16px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #374151;
+  }
+
+  .thresh-label input[type="range"] {
+    flex: 1;
+    max-width: 280px;
+    accent-color: #7a5cff;
+  }
+
   /* ── CTA buttons ──────────────────────────────── */
   #cta {
     display: flex;
     align-items: center;
     gap: 16px;
     flex-wrap: wrap;
+    margin-bottom: 24px;
   }
 
   .btn {
@@ -324,6 +620,73 @@ import background from "../assets/background.svg";
     cursor: not-allowed;
     transform: none;
     box-shadow: none;
+  }
+
+  /* ── Result & error ───────────────────────────── */
+  #error-panel {
+    padding: 14px 18px;
+    border-radius: 12px;
+    background: rgba(254, 226, 226, 0.85);
+    border: 1px solid rgba(248, 113, 113, 0.45);
+    color: #991b1b;
+    font-size: 15px;
+    line-height: 1.5;
+    margin-bottom: 20px;
+  }
+
+  .result-heading {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: #0f172a;
+    margin: 0 0 14px;
+    letter-spacing: -0.02em;
+  }
+
+  .result-card {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+    align-items: flex-start;
+    padding: 20px 22px;
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.65);
+    backdrop-filter: blur(14px);
+    border: 1px solid rgba(255, 255, 255, 0.85);
+    box-shadow: 0 4px 28px rgba(0, 0, 0, 0.06);
+  }
+
+  #result-preview {
+    width: min(200px, 100%);
+    height: auto;
+    border-radius: 12px;
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    background: #f8fafc;
+    object-fit: contain;
+  }
+
+  .result-body {
+    flex: 1;
+    min-width: 200px;
+  }
+
+  .result-label {
+    font-size: 1.35rem;
+    font-weight: 800;
+    color: #0f172a;
+    margin: 0 0 10px;
+    letter-spacing: -0.02em;
+  }
+
+  .result-score {
+    font-size: 16px;
+    color: #374151;
+    margin: 0 0 8px;
+  }
+
+  .result-meta {
+    font-size: 14px;
+    color: #6b7280;
+    margin: 0;
   }
 
   /* ── Divider ──────────────────────────────────── */

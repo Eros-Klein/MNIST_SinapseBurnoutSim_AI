@@ -52,18 +52,8 @@ async def store_image_result(
         created_at=created_at,
         shape=(int(volume.shape[0]), int(volume.shape[1]), int(volume.shape[2])),
         evaluation=evaluation,
-        preview_url=f"/images/{image_id}/preview",
+        npy_url=f"/images/{image_id}/npy",
     )
-
-
-async def store_preview(image_id: str, preview_png: bytes) -> None:
-    entry_dir = _entry_dir(image_id)
-
-    def _write_sync() -> None:
-        with (entry_dir / "preview.png").open("wb") as fh:
-            fh.write(preview_png)
-
-    await asyncio.to_thread(_write_sync)
 
 
 async def list_entries(offset: int, limit: int) -> list[ImageEntry]:
@@ -96,7 +86,7 @@ async def list_entries(offset: int, limit: int) -> list[ImageEntry]:
                     created_at=datetime.fromisoformat(row["created_at"]),
                     shape=(int(shape[0]), int(shape[1]), int(shape[2])),
                     evaluation=EvaluationResult(**row["evaluation"]),
-                    preview_url=f"/images/{row['id']}/preview",
+                    npy_url=f"/images/{row['id']}/npy",
                 )
             )
 
@@ -105,11 +95,11 @@ async def list_entries(offset: int, limit: int) -> list[ImageEntry]:
     return await asyncio.to_thread(_read_sync)
 
 
-async def preview_path_for_id(image_id: str) -> Path | None:
+async def npy_path_for_id(image_id: str) -> Path | None:
     if not _is_valid_image_id(image_id):
         return None
 
-    file_path = _entry_dir(image_id) / "preview.png"
+    file_path = _entry_dir(image_id) / "input.npy"
 
     def _resolve_sync() -> Path | None:
         if file_path.exists() and file_path.is_file():

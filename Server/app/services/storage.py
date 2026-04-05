@@ -117,3 +117,17 @@ async def preview_path_for_id(image_id: str) -> Path | None:
         return None
 
     return await asyncio.to_thread(_resolve_sync)
+
+
+async def volume_path_for_id(image_id: str) -> Path | None:
+    if not _is_valid_image_id(image_id):
+        return None
+
+    file_path = _entry_dir(image_id) / "input.npy"
+
+    def _resolve_sync() -> Path | None:
+        if file_path.exists() and file_path.is_file():
+            return file_path
+        return None
+
+    return await asyncio.to_thread(_resolve_sync)

@@ -16,6 +16,7 @@ from app.services.storage import (
     preview_path_for_id,
     store_image_result,
     store_preview,
+    volume_path_for_id,
 )
 
 @asynccontextmanager
@@ -29,7 +30,7 @@ app = FastAPI(title="SynapseMNIST API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -86,3 +87,16 @@ async def get_image_preview(image_id: str) -> FileResponse:
         raise HTTPException(status_code=404, detail="Image preview not found.")
 
     return FileResponse(path=preview_path, media_type="image/png")
+
+
+@app.get("/images/{image_id}/volume")
+async def get_image_volume(image_id: str) -> FileResponse:
+    volume_path = await volume_path_for_id(image_id)
+    if volume_path is None:
+        raise HTTPException(status_code=404, detail="Image volume not found.")
+
+    return FileResponse(
+        path=volume_path,
+        media_type="application/octet-stream",
+        filename="volume.npy",
+    )

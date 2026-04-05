@@ -102,14 +102,33 @@ import background from "../assets/background.svg";
 
         <div id="result-panel" hidden>
           <h2 class="result-heading">Result</h2>
-          <div class="result-card">
-            <img id="result-preview" src="" alt="Model preview" width="200" height="200" />
-            <div class="result-body">
-              <p class="result-label" id="result-label"></p>
-              <p class="result-score">Confidence: <strong id="result-score"></strong></p>
-              <p class="result-meta" id="result-meta"></p>
-            </div>
+          <div class="result-summary">
+            <p class="result-label" id="result-label"></p>
+            <p class="result-score">Confidence: <strong id="result-score"></strong></p>
+            <p class="result-meta" id="result-meta"></p>
           </div>
+          <section class="volume-panel">
+            <h3 class="volume-heading">3D result volume</h3>
+            <p class="volume-hint">Drag to rotate, scroll to zoom. Use the sliders for orthogonal slices.</p>
+            <div class="volume-layout">
+              <div id="result-webgl-host" class="volume-webgl-host"></div>
+              <div class="volume-slices">
+                <div class="slice-block">
+                  <label class="slice-label">XY slice (Z) <span id="result-slice-z-val" class="slice-val"></span><input type="range" id="result-slice-z" min="0" max="27" value="14" /></label>
+                  <canvas id="result-slice-xy" class="slice-canvas"></canvas>
+                </div>
+                <div class="slice-block">
+                  <label class="slice-label">XZ slice (Y) <span id="result-slice-y-val" class="slice-val"></span><input type="range" id="result-slice-y" min="0" max="27" value="14" /></label>
+                  <canvas id="result-slice-xz" class="slice-canvas"></canvas>
+                </div>
+                <div class="slice-block">
+                  <label class="slice-label">YZ slice (X) <span id="result-slice-x-val" class="slice-val"></span><input type="range" id="result-slice-x" min="0" max="27" value="14" /></label>
+                  <canvas id="result-slice-yz" class="slice-canvas"></canvas>
+                </div>
+              </div>
+            </div>
+            <label class="thresh-label">Intensity cutoff <input type="range" id="result-threshold" min="0" max="100" value="10" /><span id="result-threshold-val" class="slice-val"></span></label>
+          </section>
         </div>
       </div>
     </section>
@@ -117,8 +136,8 @@ import background from "../assets/background.svg";
 </div>
 
 <script>
-  import { previewAbsoluteUrl, uploadVolume, type ImageEntry } from "../lib/api";
-  import { parseNpyBuffer } from "../lib/npyParse";
+  import { uploadVolume, type ImageEntry } from "../lib/api";
+  import { parseNpyBuffer, type ParsedVolume } from "../lib/npyParse";
   import { createVolumeView, type VolumeViewHandle } from "../lib/volumeViewer";
 
   const fileInput = document.getElementById("file-input") as HTMLInputElement;
@@ -143,12 +162,25 @@ import background from "../assets/background.svg";
   const thresholdVal = document.getElementById("threshold-val") as HTMLSpanElement;
   const errorPanel = document.getElementById("error-panel") as HTMLDivElement;
   const resultPanel = document.getElementById("result-panel") as HTMLDivElement;
-  const resultPreview = document.getElementById("result-preview") as HTMLImageElement;
   const resultLabel = document.getElementById("result-label") as HTMLParagraphElement;
   const resultScore = document.getElementById("result-score") as HTMLStrongElement;
   const resultMeta = document.getElementById("result-meta") as HTMLParagraphElement;
+  const resultWebglHost = document.getElementById("result-webgl-host") as HTMLElement;
+  const resultSliceZ = document.getElementById("result-slice-z") as HTMLInputElement;
+  const resultSliceY = document.getElementById("result-slice-y") as HTMLInputElement;
+  const resultSliceX = document.getElementById("result-slice-x") as HTMLInputElement;
+  const resultSliceZVal = document.getElementById("result-slice-z-val") as HTMLSpanElement;
+  const resultSliceYVal = document.getElementById("result-slice-y-val") as HTMLSpanElement;
+  const resultSliceXVal = document.getElementById("result-slice-x-val") as HTMLSpanElement;
+  const resultCanvasXy = document.getElementById("result-slice-xy") as HTMLCanvasElement;
+  const resultCanvasXz = document.getElementById("result-slice-xz") as HTMLCanvasElement;
+  const resultCanvasYz = document.getElementById("result-slice-yz") as HTMLCanvasElement;
+  const resultThreshold = document.getElementById("result-threshold") as HTMLInputElement;
+  const resultThresholdVal = document.getElementById("result-threshold-val") as HTMLSpanElement;
 
   let volumeView: VolumeViewHandle | null = null;
+  let resultVolumeView: VolumeViewHandle | null = null;
+  let lastParsedVolume: ParsedVolume | null = null;
 
   function disposeVolumeView() {
     volumeView?.dispose();
@@ -175,8 +207,16 @@ import background from "../assets/background.svg";
     errorPanel.textContent = "";
   }
 
+  function disposeResultVolumeView() {
+    resultVolumeView?.dispose();
+    resultVolumeView = null;
+  }
+
+  function updateResultThresholdLabel() {
+    resultThresholdVal.textContent = `${resultThreshold.value}%`;
+  }
+
   function renderResult(entry: ImageEntry) {
-    resultPreview.src = previewAbsoluteUrl(entry.preview_url);
     resultLabel.textContent = entry.evaluation.label;
     const pct = Math.round(entry.evaluation.score * 1000) / 10;
     resultScore.textContent = `${pct}%`;
@@ -184,6 +224,25 @@ import background from "../assets/background.svg";
     const shape = `${entry.shape[0]}×${entry.shape[1]}×${entry.shape[2]}`;
     resultMeta.textContent = `${shape} · ${when}`;
     resultPanel.hidden = false;
+
+    disposeResultVolumeView();
+    if (!lastParsedVolume) return;
+
+    resultWebglHost.innerHTML = "";
+    resultVolumeView = createVolumeView(resultWebglHost, lastParsedVolume, {
+      xy: resultCanvasXy,
+      xz: resultCanvasXz,
+      yz: resultCanvasYz,
+      rangeZ: resultSliceZ,
+      rangeY: resultSliceY,
+      rangeX: resultSliceX,
+      valZ: resultSliceZVal,
+      valY: resultSliceYVal,
+      valX: resultSliceXVal,
+    });
+    updateResultThresholdLabel();
+    resultVolumeView.setThreshold(Number(resultThreshold.value) / 100);
+    requestAnimationFrame(() => resultVolumeView?.relayout());
   }
 
   async function scanSynapse(file: File): Promise<void> {
@@ -221,9 +280,12 @@ import background from "../assets/background.svg";
     scanBtn.disabled = false;
 
     disposeVolumeView();
+    disposeResultVolumeView();
+    lastParsedVolume = null;
     try {
       const buf = await file.arrayBuffer();
       const parsed = parseNpyBuffer(buf);
+      lastParsedVolume = parsed;
       volumeWebglHost.innerHTML = "";
       volumeView = createVolumeView(volumeWebglHost, parsed, {
         xy: canvasXy,
@@ -248,6 +310,11 @@ import background from "../assets/background.svg";
   thresholdInput.addEventListener("input", () => {
     updateThresholdLabel();
     volumeView?.setThreshold(Number(thresholdInput.value) / 100);
+  });
+
+  resultThreshold.addEventListener("input", () => {
+    updateResultThresholdLabel();
+    resultVolumeView?.setThreshold(Number(resultThreshold.value) / 100);
   });
 
   fileInput.addEventListener("change", () => {
@@ -642,31 +709,18 @@ import background from "../assets/background.svg";
     letter-spacing: -0.02em;
   }
 
-  .result-card {
+  .result-summary {
     display: flex;
     flex-wrap: wrap;
-    gap: 20px;
-    align-items: flex-start;
-    padding: 20px 22px;
-    border-radius: 16px;
+    gap: 8px 20px;
+    align-items: baseline;
+    padding: 16px 20px;
+    border-radius: 14px;
     background: rgba(255, 255, 255, 0.65);
     backdrop-filter: blur(14px);
     border: 1px solid rgba(255, 255, 255, 0.85);
     box-shadow: 0 4px 28px rgba(0, 0, 0, 0.06);
-  }
-
-  #result-preview {
-    width: min(200px, 100%);
-    height: auto;
-    border-radius: 12px;
-    border: 1px solid rgba(0, 0, 0, 0.08);
-    background: #f8fafc;
-    object-fit: contain;
-  }
-
-  .result-body {
-    flex: 1;
-    min-width: 200px;
+    margin-bottom: 18px;
   }
 
   .result-label {

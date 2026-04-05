@@ -13,16 +13,6 @@ export function getApiBase(): string {
   return "http://127.0.0.1:8000";
 }
 
-/** Turn API `preview_url` (e.g. `/images/{id}/preview`) into a browser-loadable URL. */
-export function previewAbsoluteUrl(previewUrl: string): string {
-  if (previewUrl.startsWith("http://") || previewUrl.startsWith("https://")) {
-    return previewUrl;
-  }
-  const base = getApiBase();
-  const path = previewUrl.startsWith("/") ? previewUrl : `/${previewUrl}`;
-  return `${base}${path}`;
-}
-
 export interface EvaluationResult {
   label: string;
   score: number;
@@ -34,7 +24,7 @@ export interface ImageEntry {
   created_at: string;
   shape: [number, number, number];
   evaluation: EvaluationResult;
-  preview_url: string;
+  npy_url: string;
 }
 
 export interface ImageListResponse {
@@ -56,7 +46,7 @@ export async function fetchImageList(offset = 0, limit = 50): Promise<ImageListR
 
 export function volumeAbsoluteUrl(imageId: string): string {
   const base = getApiBase();
-  return `${base}/images/${encodeURIComponent(imageId)}/volume`;
+  return `${base}/images/${encodeURIComponent(imageId)}/npy`;
 }
 
 export async function fetchVolumeNpy(imageId: string): Promise<ArrayBuffer> {

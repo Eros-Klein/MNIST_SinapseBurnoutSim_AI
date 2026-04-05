@@ -86,7 +86,7 @@ import Layout from "../layouts/Layout.astro";
   </div>
 
 <script>
-  import { fetchImageList, fetchVolumeNpy, previewAbsoluteUrl, type ImageEntry } from "../lib/api";
+  import { fetchImageList, fetchVolumeNpy, type ImageEntry } from "../lib/api";
   import { parseNpyBuffer } from "../lib/npyParse";
   import { createVolumeView, type VolumeViewHandle } from "../lib/volumeViewer";
 
@@ -127,11 +127,10 @@ import Layout from "../layouts/Layout.astro";
   function cardHtml(entry: ImageEntry): string {
     const when = new Date(entry.created_at).toLocaleString();
     const scorePct = `${Math.round(entry.evaluation.score * 1000) / 10}%`;
-    const src = previewAbsoluteUrl(entry.preview_url);
     const shape = `${entry.shape[0]}×${entry.shape[1]}×${entry.shape[2]}`;
     return `
       <article class="card">
-        <img class="card-preview" src="${src}" alt="" loading="lazy" width="200" height="200" />
+        <canvas class="card-preview" data-npy-id="${escapeHtml(entry.id)}" width="200" height="200"></canvas>
         <div class="card-body">
           <p class="card-label">${escapeHtml(entry.evaluation.label)}</p>
           <p class="card-meta">Confidence: <strong>${scorePct}</strong></p>
@@ -142,6 +141,37 @@ import Layout from "../layouts/Layout.astro";
         </div>
       </article>
     `;
+  }
+
+  function renderSliceToCanvas(canvas: HTMLCanvasElement, vol: { data: Float32Array; d: number; h: number; w: number }) {
+    const midZ = vol.d >> 1;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    canvas.width = vol.w;
+    canvas.height = vol.h;
+    const img = ctx.createImageData(vol.w, vol.h);
+    const base = midZ * vol.h * vol.w;
+    for (let y = 0; y < vol.h; y++) {
+      for (let x = 0; x < vol.w; x++) {
+        const v = Math.round(vol.data[base + y * vol.w + x] * 255);
+        const px = (y * vol.w + x) * 4;
+        img.data[px] = v;
+        img.data[px + 1] = v;
+        img.data[px + 2] = v;
+        img.data[px + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+  }
+
+  async function loadCardPreview(canvas: HTMLCanvasElement, imageId: string) {
+    try {
+      const buf = await fetchVolumeNpy(imageId);
+      const vol = parseNpyBuffer(buf);
+      renderSliceToCanvas(canvas, vol);
+    } catch {
+      /* preview stays blank on failure */
+    }
   }
 
   function escapeHtml(s: string): string {
@@ -163,6 +193,10 @@ import Layout from "../layouts/Layout.astro";
         return;
       }
       grid.innerHTML = data.items.map(cardHtml).join("");
+      grid.querySelectorAll<HTMLCanvasElement>("canvas[data-npy-id]").forEach((c) => {
+        const id = c.dataset.npyId;
+        if (id) void loadCardPreview(c, id);
+      });
     } catch (e) {
       showStatus(e instanceof Error ? e.message : "Could not load results.", true);
     } finally {
@@ -390,11 +424,12 @@ import Layout from "../layouts/Layout.astro";
   }
 
   .card-preview {
+    display: block;
     width: 100%;
     aspect-ratio: 1;
-    object-fit: contain;
-    background: #f8fafc;
+    background: #0f172a;
     border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+    image-rendering: pixelated;
   }
 
   .card-body {
@@ -451,6 +486,10 @@ import Layout from "../layouts/Layout.astro";
     align-items: center;
     justify-content: center;
     padding: 20px;
+  }
+
+  .viewer-modal[hidden] {
+    display: none;
   }
 
   .viewer-modal-backdrop {

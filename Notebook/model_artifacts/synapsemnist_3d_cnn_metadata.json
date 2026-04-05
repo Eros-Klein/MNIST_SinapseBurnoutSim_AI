@@ -1,0 +1,38 @@
+{
+  "model_path": "model_artifacts/synapsemnist_3d_cnn.keras",
+  "input_shape": [
+    28,
+    28,
+    28,
+    1
+  ],
+  "expected_volume_shape": [
+    28,
+    28,
+    28
+  ],
+  "dtype": "float32",
+  "normalization": {
+    "method": "divide",
+    "value": 255.0
+  },
+  "decision_threshold": 0.5,
+  "class_names": {
+    "0": "no_synapse",
+    "1": "has_synapse"
+  },
+  "training": {
+    "epochs_ran": 27,
+    "class_weight": {
+      "0": 1.8580060422960725,
+      "1": 0.6840934371523916
+    }
+  },
+  "test_metrics": {
+    "loss": 0.7329569458961487,
+    "accuracy": 0.7698863744735718,
+    "auc": 0.6731312870979309,
+    "recall": 0.9883268475532532,
+    "precision": 0.7650602459907532
+  }
+}

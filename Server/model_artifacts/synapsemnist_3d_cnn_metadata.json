@@ -18,8 +18,8 @@
   },
   "decision_threshold": 0.5,
   "class_names": {
-    "0": "no_synapse",
-    "1": "has_synapse"
+    "0": "Inhibitory",
+    "1": "Excitatory"
   },
   "training": {
     "epochs_ran": 27,
